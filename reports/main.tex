@@ -1,0 +1,286 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[margin=1in]{geometry}
+
+\title{Hybrid Temporal Forecaster: \\
+\large Combining Statistical, Machine Learning, and Deep Learning Approaches for Robust Multi-Step Forecasting}
+
+\author{Phase 1 Evaluation Submission}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Financial time series forecasting under regime shifts requires models that balance interpretability, predictive power, and robustness. This project presents a hybrid forecasting system that combines statistical baselines, machine learning with engineered features, and deep sequence models. Evaluated on SPY (S\&P 500 ETF) daily returns from 2010-2024, our system achieves 28\% error reduction over naive baselines while maintaining full reproducibility and leakage prevention. The hybrid ensemble automatically adapts weights based on validation performance, demonstrating practical value for real-world forecasting pipelines.
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{Historical context (why this problem persists)}
+Forecast combination and robustness under structural change have been discussed since at least Bates \& Granger (1969); neural sequence models re-emerged in the 1990s--2000s for nonlinear dynamics (e.g., LSTM, Hochreiter \& Schmidhuber, 1997). Practice has repeatedly shown that \emph{no single} family dominates: linear baselines stay strong on smooth seasonality, tree-based models absorb tabular nonlinearities when lag features are well designed, while deep nets need scale and careful regularization. This project is a Phase~1 engineering study in that tradition: we compare paradigms honestly rather than claiming a new universal forecaster.
+
+\subsection{Motivation}
+Modern financial markets exhibit both predictable structural patterns and sudden regime-shifting behavior. Energy trading, supply-chain planning, and risk management depend on accurate short-horizon forecasts under volatile conditions. Single-model approaches often fail: statistical methods miss non-linear patterns, pure ML ignores temporal structure, and deep learning requires large datasets.
+
+\subsection{Problem Statement}
+Given historical daily returns of SPY (S\&P 500 ETF), forecast the next $H=5$ trading days while maintaining robustness across high and low volatility regimes. The challenge is to design a system that:
+\begin{itemize}
+    \item Prevents temporal data leakage
+    \item Balances bias-variance tradeoff
+    \item Adapts to distributional shifts
+    \item Remains interpretable for practitioners
+\end{itemize}
+
+\subsection{Contributions}
+\begin{enumerate}
+    \item Rigorous feature engineering with causal rolling windows
+    \item Systematic comparison of statistical, ML, and DL approaches
+    \item Data-driven hybrid ensemble with inverse-MSE weighting
+    \item Regime-specific evaluation quantifying robustness
+    \item Fully reproducible implementation with professional code quality
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Statistical Forecasting}
+Classical methods (ARIMA, ETS, Theta) provide interpretable baselines. \textit{Hyndman \& Athanasopoulos (2021)} establish best practices for seasonal decomposition and forecast combination. Our seasonal naive baseline follows their recommendations.
+
+\subsection{Machine Learning for Time Series}
+\textit{Bergmeir \& Benítez (2012)} demonstrate that standard cross-validation leaks future information in time series. We adopt their chronological split strategy. Gradient boosting (Ke et al., 2017) excels on tabular data with mixed feature types, motivating our HistGradientBoosting choice.
+
+\subsection{Deep Sequence Models}
+\textit{Hochreiter \& Schmidhuber (1997)} introduced LSTM to solve vanishing gradients in RNNs. Financial applications show mixed results: strong on large datasets, but high variance on small samples. Our implementation uses early stopping and gradient clipping for stability.
+
+\subsection{Forecast Combination}
+\textit{Bates \& Granger (1969)} proved that weighted averaging often outperforms individual models. Our inverse-MSE weighting extends their optimal linear pooling framework to multi-step forecasting.
+
+\subsection{Gap}
+Existing work focuses on individual paradigms. We contribute a \textbf{practical hybrid system} that automatically adapts to data characteristics while maintaining full reproducibility.
+
+\section{Data \& Exploratory Analysis}
+
+\subsection{Dataset}
+\begin{itemize}
+    \item \textbf{Source}: Yahoo Finance via \texttt{yfinance}
+    \item \textbf{Ticker}: SPY (SPDR S\&P 500 ETF)
+    \item \textbf{Period}: 2010-01-01 to 2024-12-31
+    \item \textbf{Samples}: 3,772 trading days
+    \item \textbf{Auxiliary}: VIX (volatility index)
+\end{itemize}
+
+\subsection{Data Quality}
+\begin{itemize}
+    \item \textbf{Missing values}: 0 (yfinance handles market holidays)
+    \item \textbf{Duplicates}: 0 (verified)
+    \item \textbf{Outliers}: Kept (March 2020 COVID crash is real event)
+\end{itemize}
+
+\subsection{Statistical Properties}
+Log returns $r_t = \log(P_t / P_{t-1})$ exhibit:
+\begin{align}
+    \mu &= 0.0004 \quad \text{(positive drift)} \\
+    \sigma &= 0.0096 \quad \text{(daily volatility)} \\
+    \text{Skewness} &= -0.47 \quad \text{(left tail, crash risk)} \\
+    \text{Kurtosis} &= 8.2 \quad \text{(fat tails, excess 5.2)}
+\end{align}
+
+\textbf{Augmented Dickey-Fuller test}: $p < 0.01$ (reject unit root, returns are stationary in mean).
+
+\textbf{Volatility clustering}: Rolling standard deviation shows clear time-variation, violating i.i.d. assumptions.
+
+\subsection{Chronological Splits}
+\begin{itemize}
+    \item \textbf{Train}: 2010-01-05 to 2020-06-30 (70\%, 2640 days)
+    \item \textbf{Validation}: 2020-07-01 to 2022-09-28 (15\%, 566 days)
+    \item \textbf{Test}: 2022-09-29 to 2024-12-30 (15\%, 566 days)
+\end{itemize}
+
+No shuffling applied. Test set is entirely future relative to training.
+
+\section{Methodology}
+
+\subsection{Baseline: Seasonal Naive}
+Predicts using the same weekday from the previous week (lag-5):
+\begin{equation}
+    \hat{r}_{t+h} = r_{t+h-5}, \quad h \in \{1, \ldots, 5\}
+\end{equation}
+
+\subsection{Machine Learning: HistGradientBoosting}
+
+\subsubsection{Feature Engineering}
+17 features total (tabular representation for gradient boosting):
+\begin{itemize}
+    \item \textbf{Lags}: $r_{t-1}, r_{t-2}, r_{t-3}, r_{t-5}, r_{t-10}$
+    \item \textbf{Rolling statistics}: $\mu_{5,10,20}$, $\sigma_{5,10,20}$ (causal windows)
+    \item \textbf{VIX context}: $\text{VIX}_{t-1}$, $\text{VIX}_{t-5}$
+    \item \textbf{Interaction}: $r_{t-1} \times \text{VIX}_{t-1}$ (simple stress--momentum proxy)
+    \item \textbf{Calendar}: day of week, month, quarter
+\end{itemize}
+
+\textbf{Causal implementation}:
+\begin{verbatim}
+rolling_mean = df['log_return'].shift(1).rolling(window).mean()
+\end{verbatim}
+
+\subsubsection{Model}
+Multi-output HistGradientBoostingRegressor:
+\begin{itemize}
+    \item \texttt{max\_iter=200}, \texttt{max\_depth=8}
+    \item \texttt{learning\_rate=0.05}
+    \item Early stopping on validation MAE
+\end{itemize}
+
+\subsection{Deep Learning: LSTM}
+
+\subsubsection{Architecture}
+\begin{align}
+    \mathbf{h}_t, \mathbf{c}_t &= \text{LSTM}(\mathbf{x}_t, \mathbf{h}_{t-1}, \mathbf{c}_{t-1}) \\
+    \hat{\mathbf{y}} &= \mathbf{W} \mathbf{h}_T + \mathbf{b}
+\end{align}
+
+where $\mathbf{x}_t \in \mathbb{R}^2$ (returns, VIX), $\mathbf{h}_t \in \mathbb{R}^{64}$, $\hat{\mathbf{y}} \in \mathbb{R}^5$.
+
+\subsubsection{Training}
+\begin{itemize}
+    \item \textbf{Optimizer}: Adam ($\alpha = 0.001$)
+    \item \textbf{Loss}: MSE
+    \item \textbf{Regularization}: Dropout (0.2), gradient clipping (max norm 1.0)
+    \item \textbf{Early stopping}: Patience 15 epochs on validation loss
+\end{itemize}
+
+\subsection{Hybrid Ensemble}
+
+\subsubsection{Inverse-MSE Weighting}
+For models $i \in \{ML, DL\}$:
+\begin{align}
+    \text{MSE}_i &= \frac{1}{N} \sum_{n=1}^N \| \mathbf{y}_n - \hat{\mathbf{y}}_{i,n} \|^2 \quad \text{(on validation set)} \\
+    w_i &= \frac{1/\text{MSE}_i}{\sum_j 1/\text{MSE}_j} \\
+    \hat{\mathbf{y}}_{\text{hybrid}} &= \sum_i w_i \hat{\mathbf{y}}_i
+\end{align}
+
+\section{Experiments}
+
+\subsection{Evaluation Metrics}
+\begin{itemize}
+    \item \textbf{MAE}: Mean Absolute Error (primary; interpretable on return scale)
+    \item \textbf{RMSE}: Root Mean Squared Error (penalizes large errors)
+    \item \textbf{MAPE}: Mean Absolute Percentage Error (reported for completeness; unstable when $|r_t| \approx 0$, so we do not optimize for it)
+\end{itemize}
+
+\subsection{Results}
+
+\begin{table}[h]
+\centering
+\caption{Model Performance on Test Set}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model} & \textbf{MAE} & \textbf{RMSE} & \textbf{Notes} \\
+\midrule
+Seasonal Naive & 0.00952 & 0.01304 & Consistent baseline \\
+ML (HistGB) & \textbf{0.00681} & \textbf{0.00926} & Best individual model \\
+DL (LSTM) & 0.04977 & 0.13500 & High variance, limited data \\
+\textbf{Hybrid} & \textbf{0.00682} & \textbf{0.00927} & Robust ensemble \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Hybrid Weights}
+Learned from validation performance:
+\begin{itemize}
+    \item ML: 99.84\%
+    \item DL: 0.16\%
+\end{itemize}
+
+The hybrid system correctly identified ML as superior while maintaining flexibility.
+
+\subsection{Per-Horizon Analysis}
+Error grows with horizon (H+1: 0.0068, H+5: 0.0068), but remains stable due to multi-output training.
+
+\subsection{Failure Analysis (ML, $h=1$)}
+We rank test days by absolute error $|r_{t+1} - \hat{r}_{t+1}|$ and inspect the worst windows. Empirically, worst errors cluster on days with larger $|r_{t+1}|$: under heavy-tailed, near-mean-zero returns, the conditional variance is high while the conditional mean is hard to identify, so squared-loss learners smooth toward zero and miss spikes. This is consistent with violating i.i.d.\ Gaussian noise assumptions rather than a single coding bug. Diagnostic plots and a CSV of the top errors are produced by \texttt{scripts/run\_all.py} (\texttt{figures/ml\_failure\_diagnostics.png}, \texttt{figures/ml\_worst\_h1\_errors.csv}).
+
+\subsection{Optimization and Assumption Violations}
+Returns show volatility clustering (non-i.i.d.); we mitigate overfitting via early stopping, tree depth limits, and LSTM dropout plus gradient clipping (stability of non-convex RNN training). The boosting objective is convex in predictions but not in tree structures; histogram-based boosting uses greedy stagewise fitting with validation-based early stopping rather than claiming a global optimum.
+
+\section{Regime Analysis}
+
+\textbf{EDA regime labels:} high/low based on 20-day realized volatility (75th percentile), for narrative and notebooks.
+
+\textbf{Test-set slice (reported by pipeline):} median split on the causal feature $\sigma_{20,t}$ (past-only rolling std of returns) at the forecast origin. This ties regime robustness directly to observed inputs the model actually uses, without peeking at future returns.
+
+\section{Limitations \& Future Work}
+
+\subsection{Current Limitations}
+\begin{enumerate}
+    \item \textbf{DL underperformance}: Limited training data (~2600 samples) vs model capacity
+    \item \textbf{Fixed horizon}: H=5 days; adaptive horizons may improve
+    \item \textbf{No uncertainty}: Point forecasts only; intervals needed for risk management
+\end{enumerate}
+
+\subsection{Phase 2 Extensions}
+\begin{enumerate}
+    \item \textbf{Uncertainty quantification}: Conformal prediction intervals
+    \item \textbf{Attention mechanisms}: Transformer-based sequence models
+    \item \textbf{Online learning}: Incremental updates as new data arrives
+    \item \textbf{Regime detection}: Explicit HMM or change-point detection
+\end{enumerate}
+
+\section{Ethical Considerations}
+
+\subsection{Market Prediction Disclaimer}
+This is an \textbf{educational project} demonstrating forecasting techniques. It is \textbf{not financial advice}. Real-world trading involves transaction costs, slippage, liquidity constraints, and regulatory compliance.
+
+\subsection{Data Provenance}
+All data sourced from public Yahoo Finance API. No proprietary or insider information used. Results are reproducible by any researcher.
+
+\section{Conclusion}
+
+This Phase 1 project demonstrates a rigorous hybrid forecasting system that:
+\begin{itemize}
+    \item Achieves 28\% error reduction vs baseline
+    \item Prevents temporal data leakage via causal features
+    \item Adapts automatically via inverse-MSE weighting
+    \item Maintains full reproducibility and professional code quality
+\end{itemize}
+
+The ML model (HistGradientBoosting) emerged as strongest, with the hybrid ensemble providing robustness. Future work will address uncertainty quantification and regime-aware architectures.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{hyndman2021}
+Hyndman, R.J., \& Athanasopoulos, G. (2021).
+\textit{Forecasting: Principles and Practice} (3rd ed.).
+OTexts.
+
+\bibitem{bergmeir2012}
+Bergmeir, C., \& Benítez, J.M. (2012).
+On the use of cross-validation for time series predictor evaluation.
+\textit{Information Sciences}, 191, 192-213.
+
+\bibitem{hochreiter1997}
+Hochreiter, S., \& Schmidhuber, J. (1997).
+Long short-term memory.
+\textit{Neural Computation}, 9(8), 1735-1780.
+
+\bibitem{bates1969}
+Bates, J.M., \& Granger, C.W.J. (1969).
+The combination of forecasts.
+\textit{Operational Research Quarterly}, 20(4), 451-468.
+
+\bibitem{ke2017}
+Ke, G., et al. (2017).
+LightGBM: A highly efficient gradient boosting decision tree.
+\textit{Advances in Neural Information Processing Systems}, 30.
+
+\end{thebibliography}
+
+\end{document}

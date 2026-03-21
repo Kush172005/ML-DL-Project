@@ -1,0 +1,158 @@
+================================================================================
+HYBRID TEMPORAL FORECASTER - PHASE 1
+================================================================================
+
+[1/6] Loading and preparing data...
+Train: 2010-01-05 to 2020-06-30 (2640 days)
+Val:   2020-07-01 to 2022-09-28 (566 days)
+Test:  2022-09-29 to 2024-12-30 (566 days)
+
+[2/6] Training baseline models...
+Baseline predictions shape: (562, 5)
+
+[3/6] Training ML model...
+Feature engineering: 3772 -> 3752 rows (dropped 20 due to lag/rolling)
+ML data - Train: (2620, 16), Val: (566, 16), Test: (562, 16)
+Training HISTGB model...
+  Training samples: 2620
+  Features: 16
+  Horizon: 5
+  Training MAE: 0.006685
+  Validation MAE: 0.008577
+
+[4/6] Training deep learning model...
+DL datasets - Train: 2616, Val: 562, Test: 562
+Epoch 10/100 - Train Loss: 0.992508, Val Loss: 1.130661
+Epoch 20/100 - Train Loss: 0.852970, Val Loss: 1.134622
+Epoch 30/100 - Train Loss: 0.754176, Val Loss: 1.163081
+Early stopping at epoch 33
+Training complete. Best validation loss: 1.127012
+
+[5/6] Creating hybrid model...
+
+Hybrid Model Weights (based on validation MSE):
+  ML: 0.9984 (MSE: 0.000132)
+  DL: 0.0016 (MSE: 0.082327)
+
+[6/6] Evaluating all models...
+
+============================================================
+Seasonal Naive Baseline Evaluation Summary
+============================================================
+
+Overall Performance:
+  MAE: 0.009519
+  RMSE: 0.013038
+  MAPE: 1109167.247443
+
+Per-Horizon Performance:
+     MAE     RMSE         MAPE Horizon
+0.009526 0.013079 1.109119e+06     H+1
+0.009544 0.013093 1.109119e+06     H+2
+0.009551 0.013109 1.109200e+06     H+3
+0.009481 0.012945 1.109199e+06     H+4
+0.009494 0.012965 1.109200e+06     H+5
+============================================================
+
+
+============================================================
+ML (HistGradientBoosting) Evaluation Summary
+============================================================
+
+Overall Performance:
+  MAE: 0.006810
+  RMSE: 0.009258
+  MAPE: 596090.712577
+
+Per-Horizon Performance:
+     MAE     RMSE          MAPE Horizon
+0.006826 0.009301 634873.881936     H+1
+0.006830 0.009354 632762.246799     H+2
+0.006800 0.009204 817849.993038     H+3
+0.006781 0.009181 718050.120557     H+4
+0.006814 0.009247 176917.320552     H+5
+============================================================
+
+
+============================================================
+DL (LSTM) Evaluation Summary
+============================================================
+
+Overall Performance:
+  MAE: 0.049772
+  RMSE: 0.135001
+  MAPE: 56984766.199380
+
+Per-Horizon Performance:
+     MAE     RMSE         MAPE Horizon
+0.054853 0.141282 6.245831e+07     H+1
+0.045858 0.132498 6.482279e+07     H+2
+0.058143 0.138817 8.256075e+07     H+3
+0.037771 0.128095 1.095040e+07     H+4
+0.052237 0.133909 6.413158e+07     H+5
+============================================================
+
+
+============================================================
+Hybrid (Weighted Ensemble) Evaluation Summary
+============================================================
+
+Overall Performance:
+  MAE: 0.006821
+  RMSE: 0.009269
+  MAPE: 504205.793015
+
+Per-Horizon Performance:
+     MAE     RMSE          MAPE Horizon
+0.006838 0.009316 534192.222749     H+1
+0.006836 0.009361 528310.349473     H+2
+0.006811 0.009205 684797.175308     H+3
+0.006787 0.009188 699432.315785     H+4
+0.006832 0.009277  74296.901757     H+5
+============================================================
+
+
+================================================================================
+FINAL RESULTS SUMMARY
+================================================================================
+               MAE      RMSE          MAPE
+Baseline  0.009519  0.013038  1.109167e+06
+ML        0.006810  0.009258  5.960907e+05
+DL        0.049772  0.135001  5.698477e+07
+Hybrid    0.006821  0.009269  5.042058e+05
+Traceback (most recent call last):
+  File "/Users/kush/Downloads/AML_DL_Project/scripts/run_all.py", line 306, in <module>
+    main()
+    ~~~~^^
+  File "/Users/kush/Downloads/AML_DL_Project/scripts/run_all.py", line 256, in main
+    results_df.to_csv('../figures/results_summary.csv')
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kush/Downloads/AML_DL_Project/venv/lib/python3.14/site-packages/pandas/core/generic.py", line 3988, in to_csv
+    return DataFrameRenderer(formatter).to_csv(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        path_or_buf,
+        ^^^^^^^^^^^^
+    ...<14 lines>...
+        storage_options=storage_options,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/kush/Downloads/AML_DL_Project/venv/lib/python3.14/site-packages/pandas/io/formats/format.py", line 1025, in to_csv
+    csv_formatter.save()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/Users/kush/Downloads/AML_DL_Project/venv/lib/python3.14/site-packages/pandas/io/formats/csvs.py", line 251, in save
+    with get_handle(
+         ~~~~~~~~~~^
+        self.filepath_or_buffer,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+        storage_options=self.storage_options,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as handles:
+    ^
+  File "/Users/kush/Downloads/AML_DL_Project/venv/lib/python3.14/site-packages/pandas/io/common.py", line 793, in get_handle
+    check_parent_directory(str(handle))
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/Users/kush/Downloads/AML_DL_Project/venv/lib/python3.14/site-packages/pandas/io/common.py", line 652, in check_parent_directory
+    raise OSError(rf"Cannot save file into a non-existent directory: '{parent}'")
+OSError: Cannot save file into a non-existent directory: '../figures'
