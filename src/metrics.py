@@ -19,12 +19,15 @@ def mape(y_true, y_pred, epsilon=1e-10):
     return np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + epsilon))) * 100
 
 def smape(y_true, y_pred):
-    """Symmetric Mean Absolute Percentage Error."""
+    """
+    Symmetric Mean Absolute Percentage Error (sMAPE).
+    Primary metric per teacher's specification.
+    """
     numerator = np.abs(y_pred - y_true)
     denominator = (np.abs(y_true) + np.abs(y_pred)) / 2
     return np.mean(numerator / (denominator + 1e-10)) * 100
 
-def evaluate_forecast(y_true, y_pred, metric_names=['MAE', 'RMSE', 'MAPE']):
+def evaluate_forecast(y_true, y_pred, metric_names=['sMAPE', 'MAE', 'RMSE']):
     """
     Evaluate forecast with multiple metrics.
     

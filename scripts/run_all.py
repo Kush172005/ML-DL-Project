@@ -1,6 +1,6 @@
 """
-End-to-end training and evaluation script.
-Trains all models (baseline, ML, DL, hybrid) and generates results.
+End-to-end training pipeline for Hybrid Temporal Forecaster (ETTh1).
+Architecture: SARIMAX (linear base) + GMM (regimes) + TFT (residuals) → Combined forecast
 """
 
 import sys
@@ -10,276 +10,255 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from pathlib import Path
-
-from src.data_prep import load_data, clean_data, add_returns, chronological_split, compute_regime_labels
-from src.features import create_all_features, get_feature_columns, prepare_ml_data
-from src.baselines import SeasonalNaive, NaiveDrift
-from src.models_ml import create_ml_forecaster
-from src.models_dl import TimeSeriesDataset, create_dl_forecaster, DLForecasterTrainer
-from src.hybrid import HybridForecaster
-from src.metrics import evaluate_forecast, evaluate_per_horizon, evaluate_by_regime, print_evaluation_summary
-from src.failure_analysis import summarize_failure_buckets, plot_failure_diagnostics, export_worst_windows
-
 import torch
-from torch.utils.data import DataLoader
+
+from src.data_prep import load_etth1, clean_data, chronological_split, plot_target_and_splits
+from src.baselines import SARIMAXForecaster
+from src.gmm_regimes import compute_residuals
+from src.gmm_regimes import create_gmm_features, GMMRegimeDetector
+from src.models_tft import TFTDataset, train_tft_simple, predict_tft_simple
+from src.hybrid import ResidualHybridForecaster
+from src.metrics import evaluate_forecast, evaluate_per_horizon, print_evaluation_summary
 
 # Configuration
-HORIZON = 5
+HORIZON = 24  # 24 hours ahead
+ENCODER_LENGTH = 48  # 48 hours lookback
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
 def main():
     print("="*80)
-    print("HYBRID TEMPORAL FORECASTER - PHASE 1")
+    print("HYBRID TEMPORAL FORECASTER - ETTh1 (Teacher Architecture)")
+    print("="*80)
+    print("Architecture: SARIMAX → Residuals → GMM Regimes → TFT → Combined Forecast")
     print("="*80)
     
-    # Create output directories
     figures_dir = Path(__file__).parent.parent / 'figures'
     figures_dir.mkdir(exist_ok=True, parents=True)
     
     # =========================================================================
     # 1. DATA PREPARATION
     # =========================================================================
-    print("\n[1/6] Loading and preparing data...")
+    print("\n[1/6] Loading ETTh1 data...")
     data_dir = Path(__file__).parent.parent / 'data' / 'raw'
-    df = load_data(data_dir)
+    df = load_etth1(data_dir)
     df = clean_data(df)
-    df = add_returns(df)
-    df = compute_regime_labels(df)
     
-    # Chronological split
-    train_idx, val_idx, test_idx = chronological_split(df, train_frac=0.7, val_frac=0.15)
+    train_idx, val_idx, test_idx = chronological_split(df, train_frac=0.6, val_frac=0.2)
     
-    # =========================================================================
-    # 2. BASELINE MODELS
-    # =========================================================================
-    print("\n[2/6] Training baseline models...")
-    
-    # Seasonal Naive
-    sn_model = SeasonalNaive(seasonal_period=5)
-    sn_model.fit(df.loc[train_idx, 'log_return'].values)
-    
-    # Generate baseline predictions on test set
-    test_returns = df.loc[test_idx, 'log_return'].values
-    baseline_pred = sn_model.forecast_rolling(test_returns, horizon=HORIZON)
-    
-    # Align test targets
-    y_test_baseline = []
-    for i in range(len(baseline_pred)):
-        y_test_baseline.append(test_returns[i:i+HORIZON])
-    y_test_baseline = np.array(y_test_baseline)
-    
-    print(f"Baseline predictions shape: {baseline_pred.shape}")
+    # Plot splits
+    plot_target_and_splits(df, train_idx, val_idx, test_idx, 
+                          save_path=figures_dir / 'data_splits.png')
     
     # =========================================================================
-    # 3. ML MODEL
+    # 2. SARIMAX LINEAR BASE
     # =========================================================================
-    print("\n[3/6] Training ML model...")
+    print("\n[2/6] Training SARIMAX linear base...")
     
-    # Create features
-    df_feat = create_all_features(df, include_calendar=True, include_vix=True)
-    feature_cols = get_feature_columns(df_feat)
+    y_train = df.loc[train_idx, 'OT']
+    y_val = df.loc[val_idx, 'OT']
+    y_test = df.loc[test_idx, 'OT']
     
-    # Prepare ML data
-    X_full, y_full = prepare_ml_data(df_feat, feature_cols, target_col='log_return', horizon=HORIZON)
+    # Fit SARIMAX
+    sarimax = SARIMAXForecaster(order=(1, 0, 1), seasonal_order=(1, 0, 1, 24))
+    sarimax.fit(y_train)
     
-    # Align indices after feature engineering
-    valid_idx = df_feat.index[:len(X_full)]
+    # Get in-sample fitted values and compute residuals
+    fitted_train = sarimax.get_fitted_values()
+    residuals_train = compute_residuals(y_train, fitted_train)
     
-    # Split based on original splits
-    train_mask = valid_idx.isin(train_idx)
-    val_mask = valid_idx.isin(val_idx)
-    test_mask = valid_idx.isin(test_idx)
+    print(f"  Train residuals: mean={np.mean(residuals_train):.4f}, std={np.std(residuals_train):.4f}")
     
-    X_train = X_full[train_mask]
-    y_train = y_full[train_mask]
-    X_val = X_full[val_mask]
-    y_val = y_full[val_mask]
-    X_test = X_full[test_mask]
-    y_test = y_full[test_mask]
+    # Generate SARIMAX forecasts for validation and test
+    # For simplicity: forecast from end of train for each window
+    # (In production, would refit periodically)
     
-    print(f"ML data - Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+    sarimax_val_forecasts = []
+    sarimax_test_forecasts = []
     
-    # Train HistGradientBoosting
-    ml_model = create_ml_forecaster(model_type='histgb', horizon=HORIZON)
-    ml_model.fit(X_train, y_train, X_val, y_val)
+    # Validation forecasts (simplified: one long forecast)
+    val_forecast_full = sarimax.forecast(steps=len(val_idx))
+    for i in range(len(val_idx) - HORIZON + 1):
+        sarimax_val_forecasts.append(val_forecast_full[i:i+HORIZON].values)
+    sarimax_val_forecasts = np.array(sarimax_val_forecasts)
     
-    ml_pred_val = ml_model.predict(X_val)
-    ml_pred_test = ml_model.predict(X_test)
+    # Test forecasts (extend with validation data)
+    extended_train = pd.concat([y_train, y_val])
+    sarimax_test = SARIMAXForecaster(order=(1, 0, 1), seasonal_order=(1, 0, 1, 24))
+    sarimax_test.fit(extended_train)
+    
+    test_forecast_full = sarimax_test.forecast(steps=len(test_idx))
+    for i in range(len(test_idx) - HORIZON + 1):
+        sarimax_test_forecasts.append(test_forecast_full[i:i+HORIZON].values)
+    sarimax_test_forecasts = np.array(sarimax_test_forecasts)
+    
+    print(f"  SARIMAX val forecasts: {sarimax_val_forecasts.shape}")
+    print(f"  SARIMAX test forecasts: {sarimax_test_forecasts.shape}")
     
     # =========================================================================
-    # 4. DEEP LEARNING MODEL
+    # 3. GMM REGIME DETECTION
     # =========================================================================
-    print("\n[4/6] Training deep learning model...")
+    print("\n[3/6] Detecting regimes with GMM...")
     
-    # Prepare sequence data (use price + returns + vix)
-    sequence_data = df[['log_return', 'vix']].values
+    # Create GMM features from training residuals
+    gmm_features_train = create_gmm_features(residuals_train, window=24)
     
-    # Normalize for DL
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    sequence_data_scaled = scaler.fit_transform(sequence_data)
+    # Fit GMM on training features only
+    gmm = GMMRegimeDetector(n_components=2, random_state=RANDOM_SEED)
+    gmm.fit(gmm_features_train.values)
     
-    # Create datasets
-    window_size = 20
+    # For val/test, we need to compute residuals in a causal way
+    # Use SARIMAX fitted/forecast values
+    residuals_val = y_val.values - val_forecast_full[:len(y_val)].values
+    residuals_test = y_test.values - test_forecast_full[:len(y_test)].values
     
-    train_data = sequence_data_scaled[:len(train_idx)]
-    val_data = sequence_data_scaled[len(train_idx):len(train_idx)+len(val_idx)]
-    test_data = sequence_data_scaled[len(train_idx)+len(val_idx):]
+    gmm_features_val = create_gmm_features(residuals_val, window=24)
+    gmm_features_test = create_gmm_features(residuals_test, window=24)
     
-    train_dataset = TimeSeriesDataset(train_data, window_size=window_size, horizon=HORIZON, target_col_idx=0)
-    val_dataset = TimeSeriesDataset(
-        np.vstack([train_data, val_data]), 
-        window_size=window_size, 
-        horizon=HORIZON, 
-        target_col_idx=0
+    # Get regime probabilities
+    regime_probs_train = gmm.predict_proba(gmm_features_train.values)
+    regime_probs_val = gmm.predict_proba(gmm_features_val.values)
+    regime_probs_test = gmm.predict_proba(gmm_features_test.values)
+    
+    print(f"  Regime probs - Train: {regime_probs_train.shape}, Val: {regime_probs_val.shape}, Test: {regime_probs_test.shape}")
+    
+    # =========================================================================
+    # 4. PREPARE DATA FOR TFT
+    # =========================================================================
+    print("\n[4/6] Preparing data for TFT...")
+    
+    # Align residuals and regime probs (GMM features drop some rows due to rolling)
+    # Use the indices after GMM feature creation
+    train_start_idx = len(residuals_train) - len(regime_probs_train)
+    val_start_idx = len(residuals_val) - len(regime_probs_val)
+    test_start_idx = len(residuals_test) - len(regime_probs_test)
+    
+    residuals_train_aligned = residuals_train[train_start_idx:]
+    residuals_val_aligned = residuals_val[val_start_idx:]
+    residuals_test_aligned = residuals_test[test_start_idx:]
+    
+    dates_train_aligned = train_idx[train_start_idx:]
+    dates_val_aligned = val_idx[val_start_idx:]
+    dates_test_aligned = test_idx[test_start_idx:]
+    
+    # Get covariates (HUFL, HULL, MUFL, MULL)
+    covariates_cols = ['HUFL', 'HULL', 'MUFL', 'MULL']
+    covariates_train = df.loc[dates_train_aligned, covariates_cols].values
+    covariates_val = df.loc[dates_val_aligned, covariates_cols].values
+    covariates_test = df.loc[dates_test_aligned, covariates_cols].values
+    
+    # Create TFT datasets
+    train_dataset = TFTDataset(
+        residuals_train_aligned,
+        regime_probs_train,
+        covariates_train,
+        encoder_length=ENCODER_LENGTH,
+        horizon=HORIZON
     )
-    # Only use validation portion
-    val_dataset.indices = [i for i in val_dataset.indices if i >= len(train_data) - window_size]
     
-    test_dataset = TimeSeriesDataset(
-        sequence_data_scaled,
-        window_size=window_size,
-        horizon=HORIZON,
-        target_col_idx=0
+    val_dataset = TFTDataset(
+        residuals_val_aligned,
+        regime_probs_val,
+        covariates_val,
+        encoder_length=ENCODER_LENGTH,
+        horizon=HORIZON
     )
-    # Only use test portion
-    test_dataset.indices = [i for i in test_dataset.indices if i >= len(train_idx) + len(val_idx) - window_size]
     
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    test_dataset = TFTDataset(
+        residuals_test_aligned,
+        regime_probs_test,
+        covariates_test,
+        encoder_length=ENCODER_LENGTH,
+        horizon=HORIZON
+    )
     
-    print(f"DL datasets - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    print(f"  TFT datasets - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
     
-    # Create and train LSTM
-    dl_model = create_dl_forecaster(
-        model_type='lstm',
-        input_size=sequence_data_scaled.shape[1],
+    # =========================================================================
+    # 5. TRAIN TFT
+    # =========================================================================
+    print("\n[5/6] Training Temporal Fusion Transformer...")
+    
+    # Calculate input sizes
+    encoder_input_size = 1 + regime_probs_train.shape[1] + covariates_train.shape[1]  # residual + regimes + covariates
+    decoder_input_size = regime_probs_train.shape[1] + covariates_train.shape[1]  # regimes + covariates
+    
+    tft_model = train_tft_simple(
+        train_dataset,
+        val_dataset,
+        encoder_input_size=encoder_input_size,
+        decoder_input_size=decoder_input_size,
         hidden_size=64,
         num_layers=2,
         horizon=HORIZON,
-        dropout=0.2
+        dropout=0.2,
+        learning_rate=0.001,
+        epochs=50,
+        patience=10,
+        batch_size=64
     )
     
-    trainer = DLForecasterTrainer(dl_model, device='cpu', learning_rate=0.001)
-    trainer.fit(train_loader, val_loader, epochs=100, patience=15, verbose=True)
+    # Generate TFT predictions (on residuals)
+    print("\n  Generating TFT predictions...")
+    tft_val_pred = predict_tft_simple(tft_model, val_dataset, batch_size=128)
+    tft_test_pred = predict_tft_simple(tft_model, test_dataset, batch_size=128)
     
-    # Generate predictions
-    dl_pred_val = trainer.predict(val_loader)
-    dl_pred_test = trainer.predict(test_loader)
-    
-    # Get corresponding targets
-    y_val_dl = []
-    for _, y in val_loader:
-        y_val_dl.append(y.numpy())
-    y_val_dl = np.vstack(y_val_dl)
-    
-    y_test_dl = []
-    for _, y in test_loader:
-        y_test_dl.append(y.numpy())
-    y_test_dl = np.vstack(y_test_dl)
+    print(f"  TFT val predictions: {tft_val_pred.shape}")
+    print(f"  TFT test predictions: {tft_test_pred.shape}")
     
     # =========================================================================
-    # 5. HYBRID MODEL
+    # 6. COMBINE AND EVALUATE
     # =========================================================================
-    print("\n[5/6] Creating hybrid model...")
+    print("\n[6/6] Combining forecasts and evaluating...")
     
-    # Align predictions - ML and DL may have different sample counts
-    # Use the smaller set (DL) as reference
-    min_val_samples = min(len(ml_pred_val), len(dl_pred_val))
-    min_test_samples = min(len(ml_pred_test), len(dl_pred_test))
+    hybrid = ResidualHybridForecaster()
     
-    # Trim to match
-    ml_pred_val_aligned = ml_pred_val[:min_val_samples]
-    dl_pred_val_aligned = dl_pred_val[:min_val_samples]
-    y_val_aligned = y_val[:min_val_samples]
+    # Align SARIMAX and TFT predictions
+    # TFT produces fewer samples due to encoder length requirement
+    n_val_tft = len(tft_val_pred)
+    n_test_tft = len(tft_test_pred)
     
-    ml_pred_test_aligned = ml_pred_test[:min_test_samples]
-    dl_pred_test_aligned = dl_pred_test[:min_test_samples]
-    y_test_aligned = y_test[:min_test_samples]
-    X_test_aligned = X_test[:min_test_samples]
+    sarimax_val_aligned = sarimax_val_forecasts[:n_val_tft]
+    sarimax_test_aligned = sarimax_test_forecasts[:n_test_tft]
     
-    hybrid = HybridForecaster()
+    # Combined forecasts
+    combined_val = hybrid.combine(sarimax_val_aligned, tft_val_pred)
+    combined_test = hybrid.combine(sarimax_test_aligned, tft_test_pred)
     
-    # Validation predictions (for weight computation)
-    val_predictions = {
-        'ML': ml_pred_val_aligned,
-        'DL': dl_pred_val_aligned
-    }
+    # Prepare ground truth
+    y_val_windows = []
+    for i in range(n_val_tft):
+        y_val_windows.append(y_val.values[i:i+HORIZON])
+    y_val_windows = np.array(y_val_windows)
     
-    # Test predictions
-    test_predictions = {
-        'ML': ml_pred_test_aligned,
-        'DL': dl_pred_test_aligned
-    }
+    y_test_windows = []
+    for i in range(n_test_tft):
+        y_test_windows.append(y_test.values[i:i+HORIZON])
+    y_test_windows = np.array(y_test_windows)
     
-    # Compute weights and predict
-    hybrid.compute_weights(y_val_aligned, val_predictions)
-    hybrid_pred = hybrid.predict(test_predictions)
+    # Evaluate all models
+    print("\n" + "="*80)
+    print("EVALUATION RESULTS")
+    print("="*80)
     
-    # =========================================================================
-    # 6. EVALUATION
-    # =========================================================================
-    print("\n[6/6] Evaluating all models...")
-    
-    # Evaluate each model
     models_results = {}
     
-    # Baseline (on its own test set)
-    print_evaluation_summary(y_test_baseline, baseline_pred, model_name='Seasonal Naive Baseline')
-    models_results['Baseline'] = evaluate_forecast(y_test_baseline, baseline_pred)
+    # SARIMAX only
+    print_evaluation_summary(y_test_windows, sarimax_test_aligned, model_name='SARIMAX (Linear Base)')
+    models_results['SARIMAX'] = evaluate_forecast(y_test_windows, sarimax_test_aligned)
     
-    # ML
-    print_evaluation_summary(y_test_aligned, ml_pred_test_aligned, model_name='ML (HistGradientBoosting)')
-    models_results['ML'] = evaluate_forecast(y_test_aligned, ml_pred_test_aligned)
+    # TFT only (on residuals, so add back SARIMAX for fair comparison)
+    tft_only_test = sarimax_test_aligned + tft_test_pred
+    print_evaluation_summary(y_test_windows, tft_only_test, model_name='TFT (with SARIMAX base)')
+    models_results['TFT'] = evaluate_forecast(y_test_windows, tft_only_test)
     
-    # DL
-    print_evaluation_summary(y_test_aligned, dl_pred_test_aligned, model_name='DL (LSTM)')
-    models_results['DL'] = evaluate_forecast(y_test_aligned, dl_pred_test_aligned)
-    
-    # Hybrid
-    print_evaluation_summary(y_test_aligned, hybrid_pred, model_name='Hybrid (Weighted Ensemble)')
-    models_results['Hybrid'] = evaluate_forecast(y_test_aligned, hybrid_pred)
-
-    # =========================================================================
-    # 6b. REGIME SLICE (uses only past-based rolling vol feature — no extra labels)
-    # =========================================================================
-    if 'rolling_std_20' in feature_cols:
-        j = feature_cols.index('rolling_std_20')
-        rs_test = X_test_aligned[:, j]
-        med = np.median(rs_test)
-        reg_labels = np.where(rs_test > med, 'high_past_vol', 'low_past_vol')
-        print("\n--- ML performance by past-volatility bucket (rolling_std_20 median split) ---")
-        reg_df = evaluate_by_regime(
-            y_test_aligned, ml_pred_test_aligned, reg_labels, regime_col='bucket'
-        )
-        print(reg_df.to_string(index=False))
-        reg_df.to_csv(figures_dir / 'ml_regime_slice.csv', index=False)
-
-    # =========================================================================
-    # 6c. FAILURE ANALYSIS (ML, H+1): worst errors vs |actual return|
-    # =========================================================================
-    print("\n--- Failure analysis (ML, horizon H+1) ---")
-    summ, worst_i, _ = summarize_failure_buckets(
-        y_test_aligned, ml_pred_test_aligned, horizon_idx=0, n_worst=15
-    )
-    for k, v in summ.items():
-        print(f"  {k}: {v}")
-    fail_plot = plot_failure_diagnostics(
-        y_test_aligned, ml_pred_test_aligned, figures_dir, prefix="ml", horizon_idx=0
-    )
-    fail_csv = export_worst_windows(
-        worst_i, y_test_aligned, ml_pred_test_aligned,
-        figures_dir / "ml_worst_h1_errors.csv", horizon_idx=0
-    )
-    print(f"  Saved: {fail_plot}")
-    print(f"  Saved: {fail_csv}")
+    # Combined (same as TFT in this architecture)
+    print_evaluation_summary(y_test_windows, combined_test, model_name='Hybrid (SARIMAX + TFT)')
+    models_results['Hybrid'] = evaluate_forecast(y_test_windows, combined_test)
     
     # =========================================================================
-    # 7. RESULTS SUMMARY TABLE
+    # 7. RESULTS SUMMARY
     # =========================================================================
     print("\n" + "="*80)
     print("FINAL RESULTS SUMMARY")
@@ -288,7 +267,6 @@ def main():
     results_df = pd.DataFrame(models_results).T
     print(results_df.to_string())
     
-    # Save results
     results_df.to_csv(figures_dir / 'results_summary.csv')
     print(f"\nResults saved to {figures_dir / 'results_summary.csv'}")
     
@@ -297,46 +275,73 @@ def main():
     # =========================================================================
     print("\nGenerating visualizations...")
     
-    # Plot predictions vs actual for a sample window
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    sample_idx = 50
-    sample_end = min(sample_idx + 50, len(y_test_aligned))
+    # Sample window for plotting
+    sample_idx = 100
+    sample_end = min(sample_idx + 100, len(y_test_windows))
     sample_range = range(sample_idx, sample_end)
     
-    # Flatten for plotting (show first horizon only)
-    axes[0, 0].plot(sample_range, y_test_aligned[sample_idx:sample_end, 0], 'k-', label='Actual', linewidth=2)
-    axes[0, 0].plot(sample_range, ml_pred_test_aligned[sample_idx:sample_end, 0], '--', label='ML', alpha=0.7)
-    axes[0, 0].set_title('ML Model (H+1 predictions)')
+    # SARIMAX
+    axes[0, 0].plot(sample_range, y_test_windows[sample_idx:sample_end, 0], 'k-', 
+                   label='Actual', linewidth=2, alpha=0.8)
+    axes[0, 0].plot(sample_range, sarimax_test_aligned[sample_idx:sample_end, 0], '--', 
+                   label='SARIMAX', alpha=0.7, linewidth=1.5)
+    axes[0, 0].set_title('SARIMAX Linear Base (H+1)')
     axes[0, 0].legend()
     axes[0, 0].grid(alpha=0.3)
+    axes[0, 0].set_ylabel('OT (Oil Temperature)')
     
-    axes[0, 1].plot(sample_range, y_test_aligned[sample_idx:sample_end, 0], 'k-', label='Actual', linewidth=2)
-    axes[0, 1].plot(sample_range, dl_pred_test_aligned[sample_idx:sample_end, 0], '--', label='DL', alpha=0.7)
-    axes[0, 1].set_title('DL Model (H+1 predictions)')
+    # TFT residuals
+    axes[0, 1].plot(sample_range, tft_test_pred[sample_idx:sample_end, 0], 
+                   label='TFT Residual Pred', alpha=0.7, linewidth=1.5)
+    axes[0, 1].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+    axes[0, 1].set_title('TFT Residual Predictions (H+1)')
     axes[0, 1].legend()
     axes[0, 1].grid(alpha=0.3)
+    axes[0, 1].set_ylabel('Residual')
     
-    axes[1, 0].plot(sample_range, y_test_aligned[sample_idx:sample_end, 0], 'k-', label='Actual', linewidth=2)
-    axes[1, 0].plot(sample_range, hybrid_pred[sample_idx:sample_end, 0], '--', label='Hybrid', alpha=0.7)
-    axes[1, 0].set_title('Hybrid Model (H+1 predictions)')
+    # Combined
+    axes[1, 0].plot(sample_range, y_test_windows[sample_idx:sample_end, 0], 'k-', 
+                   label='Actual', linewidth=2, alpha=0.8)
+    axes[1, 0].plot(sample_range, combined_test[sample_idx:sample_end, 0], '--', 
+                   label='Hybrid', alpha=0.7, linewidth=1.5, color='green')
+    axes[1, 0].set_title('Hybrid Forecast (H+1)')
     axes[1, 0].legend()
     axes[1, 0].grid(alpha=0.3)
+    axes[1, 0].set_xlabel('Sample Index')
+    axes[1, 0].set_ylabel('OT (Oil Temperature)')
     
-    # Bar chart of overall performance
-    axes[1, 1].bar(results_df.index, results_df['MAE'])
-    axes[1, 1].set_title('Model Comparison (MAE)')
-    axes[1, 1].set_ylabel('MAE')
+    # Model comparison bar chart
+    axes[1, 1].bar(results_df.index, results_df['sMAPE'])
+    axes[1, 1].set_title('Model Comparison (sMAPE)')
+    axes[1, 1].set_ylabel('sMAPE (%)')
     axes[1, 1].tick_params(axis='x', rotation=45)
     axes[1, 1].grid(alpha=0.3, axis='y')
     
     plt.tight_layout()
     plt.savefig(figures_dir / 'model_comparison.png', dpi=150, bbox_inches='tight')
-    print(f"Saved visualization to {figures_dir / 'model_comparison.png'}")
+    print(f"Saved: {figures_dir / 'model_comparison.png'}")
+    
+    # =========================================================================
+    # 9. PER-HORIZON ANALYSIS
+    # =========================================================================
+    print("\n" + "="*80)
+    print("PER-HORIZON BREAKDOWN (Hybrid)")
+    print("="*80)
+    
+    per_horizon = evaluate_per_horizon(y_test_windows, combined_test)
+    print(per_horizon.to_string(index=False))
+    per_horizon.to_csv(figures_dir / 'per_horizon_results.csv', index=False)
     
     print("\n" + "="*80)
     print("TRAINING COMPLETE!")
     print("="*80)
+    print(f"\nOutputs:")
+    print(f"  - {figures_dir / 'results_summary.csv'}")
+    print(f"  - {figures_dir / 'per_horizon_results.csv'}")
+    print(f"  - {figures_dir / 'model_comparison.png'}")
+    print(f"  - {figures_dir / 'data_splits.png'}")
 
 if __name__ == '__main__':
     main()

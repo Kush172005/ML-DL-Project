@@ -1,217 +1,174 @@
 """
-Statistical baseline models for time series forecasting.
-Includes seasonal naive and drift methods.
+Statistical baseline: SARIMAX for trend and seasonality modeling.
+This forms the "linear base" in the teacher's architecture.
 """
 
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import warnings
+warnings.filterwarnings('ignore')
 
-class SeasonalNaive:
+class SARIMAXForecaster:
     """
-    Seasonal Naive forecaster: predicts using the value from the same 
-    weekday in the previous week (lag 5 for daily trading data).
+    SARIMAX wrapper for hourly data with daily seasonality.
+    Captures linear trend and seasonal patterns.
     """
     
-    def __init__(self, seasonal_period=5):
+    def __init__(self, order=(1, 0, 1), seasonal_order=(1, 0, 1, 24)):
+        """
+        Args:
+            order: (p, d, q) for ARIMA
+            seasonal_order: (P, D, Q, s) for seasonal component
+                Default s=24 for daily seasonality in hourly data
+        """
+        self.order = order
+        self.seasonal_order = seasonal_order
+        self.model = None
+        self.fitted_model = None
+        self.train_data = None
+    
+    def fit(self, y_train):
+        """
+        Fit SARIMAX on training data.
+        
+        Args:
+            y_train: Training time series (1D array or Series)
+        """
+        print(f"Fitting SARIMAX{self.order} with seasonal{self.seasonal_order}...")
+        
+        self.train_data = pd.Series(y_train) if not isinstance(y_train, pd.Series) else y_train
+        
+        try:
+            self.model = SARIMAX(
+                self.train_data,
+                order=self.order,
+                seasonal_order=self.seasonal_order,
+                enforce_stationarity=False,
+                enforce_invertibility=False
+            )
+            self.fitted_model = self.model.fit(disp=False, maxiter=200)
+            print(f"  AIC: {self.fitted_model.aic:.2f}")
+            print(f"  Converged: {self.fitted_model.mle_retvals['converged']}")
+            
+        except Exception as e:
+            print(f"SARIMAX fitting failed: {e}")
+            print("Falling back to simpler ARIMA(1,0,1)")
+            self.model = SARIMAX(
+                self.train_data,
+                order=(1, 0, 1),
+                seasonal_order=(0, 0, 0, 0)
+            )
+            self.fitted_model = self.model.fit(disp=False, maxiter=100)
+        
+        return self
+    
+    def get_fitted_values(self):
+        """Get in-sample fitted values (for computing residuals)."""
+        if self.fitted_model is None:
+            raise ValueError("Model must be fitted first")
+        return self.fitted_model.fittedvalues
+    
+    def forecast(self, steps=24):
+        """
+        Forecast next 'steps' periods.
+        
+        Args:
+            steps: Forecast horizon
+        
+        Returns:
+            Array of predictions
+        """
+        if self.fitted_model is None:
+            raise ValueError("Model must be fitted first")
+        
+        return self.fitted_model.forecast(steps=steps)
+    
+    def forecast_rolling(self, y_test, horizon=24, refit_every=None):
+        """
+        Generate rolling forecasts on test set.
+        
+        Args:
+            y_test: Test data
+            horizon: Forecast horizon
+            refit_every: If None, use recursive forecasting without refitting.
+                        If int, refit every N steps (slower but more adaptive)
+        
+        Returns:
+            predictions: (n_forecasts, horizon) array
+        """
+        predictions = []
+        
+        if refit_every is None:
+            # Simple approach: extend with observed test data, forecast recursively
+            for i in range(len(y_test) - horizon + 1):
+                if i == 0:
+                    # First forecast from trained model
+                    pred = self.forecast(steps=horizon)
+                else:
+                    # Append observed data and reforecast
+                    extended_data = pd.concat([
+                        self.train_data,
+                        pd.Series(y_test[:i], index=range(len(self.train_data), len(self.train_data) + i))
+                    ])
+                    
+                    # Quick forecast without full refit
+                    try:
+                        model_temp = SARIMAX(
+                            extended_data,
+                            order=self.order,
+                            seasonal_order=self.seasonal_order,
+                            enforce_stationarity=False,
+                            enforce_invertibility=False
+                        )
+                        fitted_temp = model_temp.fit(disp=False, maxiter=50, method='bfgs')
+                        pred = fitted_temp.forecast(steps=horizon)
+                    except:
+                        # Fallback: use last known pattern
+                        pred = self.forecast(steps=horizon)
+                
+                predictions.append(pred)
+        
+        return np.array(predictions)
+
+class SimpleSeasonalBaseline:
+    """
+    Fallback: Seasonal naive for hourly data (lag-24).
+    Used if SARIMAX is too slow or unstable.
+    """
+    
+    def __init__(self, seasonal_period=24):
         self.seasonal_period = seasonal_period
         self.history = None
     
-    def fit(self, y):
-        """Store training history."""
-        self.history = np.array(y)
+    def fit(self, y_train):
+        self.history = np.array(y_train)
         return self
     
-    def predict(self, horizon=5):
-        """
-        Predict next horizon steps using seasonal naive approach.
-        
-        Args:
-            horizon: Number of steps to forecast
-        
-        Returns:
-            Array of predictions (horizon,)
-        """
-        if self.history is None:
-            raise ValueError("Model must be fitted before prediction")
-        
+    def forecast(self, steps=24):
+        """Repeat last seasonal cycle."""
         predictions = []
-        for h in range(horizon):
-            # Use value from seasonal_period steps ago
+        for h in range(steps):
             idx = -(self.seasonal_period - (h % self.seasonal_period))
             if idx == 0:
                 idx = -self.seasonal_period
             predictions.append(self.history[idx])
-        
-        return np.array(predictions)
-    
-    def forecast_rolling(self, y, horizon=5):
-        """
-        Generate rolling forecasts for a test set.
-        
-        Args:
-            y: Test data
-            horizon: Forecast horizon
-        
-        Returns:
-            predictions: (n_samples, horizon) array
-        """
-        predictions = []
-        
-        for i in range(len(y) - horizon + 1):
-            # Use all data up to current point
-            history = np.concatenate([self.history, y[:i]]) if i > 0 else self.history
-            
-            # Predict next horizon steps
-            pred = []
-            for h in range(horizon):
-                idx = -(self.seasonal_period - (h % self.seasonal_period))
-                if idx == 0:
-                    idx = -self.seasonal_period
-                pred.append(history[idx])
-            
-            predictions.append(pred)
-        
-        return np.array(predictions)
-
-class NaiveDrift:
-    """
-    Naive drift forecaster: extends the last observed value with 
-    the average historical change (drift).
-    """
-    
-    def __init__(self):
-        self.last_value = None
-        self.drift = None
-    
-    def fit(self, y):
-        """Calculate drift from training data."""
-        y = np.array(y)
-        self.last_value = y[-1]
-        self.drift = (y[-1] - y[0]) / (len(y) - 1)
-        return self
-    
-    def predict(self, horizon=5):
-        """Predict with drift."""
-        if self.last_value is None:
-            raise ValueError("Model must be fitted before prediction")
-        
-        predictions = [self.last_value + self.drift * (h + 1) for h in range(horizon)]
-        return np.array(predictions)
-    
-    def forecast_rolling(self, y, horizon=5):
-        """Generate rolling forecasts."""
-        predictions = []
-        
-        for i in range(len(y) - horizon + 1):
-            if i > 0:
-                # Update with new data
-                history = np.concatenate([np.array([self.last_value]), y[:i]])
-                last_val = y[i-1]
-                drift = (last_val - history[0]) / len(history)
-            else:
-                last_val = self.last_value
-                drift = self.drift
-            
-            pred = [last_val + drift * (h + 1) for h in range(horizon)]
-            predictions.append(pred)
-        
-        return np.array(predictions)
-
-class ETSWrapper:
-    """
-    Wrapper for statsmodels Exponential Smoothing (ETS).
-    Simple wrapper for additive trend and seasonal components.
-    """
-    
-    def __init__(self, seasonal_periods=5, trend='add', seasonal='add'):
-        self.seasonal_periods = seasonal_periods
-        self.trend = trend
-        self.seasonal = seasonal
-        self.model = None
-        self.fitted_model = None
-    
-    def fit(self, y):
-        """Fit ETS model."""
-        try:
-            self.model = ExponentialSmoothing(
-                y, 
-                seasonal_periods=self.seasonal_periods,
-                trend=self.trend,
-                seasonal=self.seasonal
-            )
-            self.fitted_model = self.model.fit()
-            return self
-        except Exception as e:
-            print(f"ETS fitting failed: {e}")
-            print("Falling back to simple exponential smoothing")
-            self.model = ExponentialSmoothing(y, trend='add', seasonal=None)
-            self.fitted_model = self.model.fit()
-            return self
-    
-    def predict(self, horizon=5):
-        """Forecast next horizon steps."""
-        if self.fitted_model is None:
-            raise ValueError("Model must be fitted before prediction")
-        
-        return self.fitted_model.forecast(steps=horizon)
-    
-    def forecast_rolling(self, y, horizon=5):
-        """
-        Generate rolling forecasts.
-        Note: This refits the model at each step, which is computationally expensive.
-        """
-        predictions = []
-        
-        # Get initial training data from the fitted model
-        train_data = self.fitted_model.model.endog
-        
-        for i in range(len(y) - horizon + 1):
-            # Combine training data with test data seen so far
-            if i > 0:
-                current_data = np.concatenate([train_data, y[:i]])
-            else:
-                current_data = train_data
-            
-            # Refit and predict
-            try:
-                model = ExponentialSmoothing(
-                    current_data,
-                    seasonal_periods=self.seasonal_periods,
-                    trend=self.trend,
-                    seasonal=self.seasonal
-                )
-                fitted = model.fit()
-                pred = fitted.forecast(steps=horizon)
-            except:
-                # Fallback to simpler model
-                model = ExponentialSmoothing(current_data, trend='add', seasonal=None)
-                fitted = model.fit()
-                pred = fitted.forecast(steps=horizon)
-            
-            predictions.append(pred)
-        
         return np.array(predictions)
 
 if __name__ == '__main__':
-    # Test baselines
-    np.random.seed(42)
-    y_train = np.cumsum(np.random.randn(100)) * 0.1
-    y_test = np.cumsum(np.random.randn(20)) * 0.1
+    from data_prep import load_etth1, clean_data, chronological_split
     
-    print("Testing Seasonal Naive...")
-    sn = SeasonalNaive(seasonal_period=5)
-    sn.fit(y_train)
-    pred = sn.predict(horizon=5)
-    print(f"Single prediction: {pred}")
+    df = load_etth1()
+    df = clean_data(df)
+    train_idx, val_idx, test_idx = chronological_split(df)
     
-    rolling_pred = sn.forecast_rolling(y_test, horizon=5)
-    print(f"Rolling predictions shape: {rolling_pred.shape}")
+    # Test SARIMAX
+    y_train = df.loc[train_idx, 'OT']
+    forecaster = SARIMAXForecaster(order=(1, 0, 1), seasonal_order=(1, 0, 1, 24))
+    forecaster.fit(y_train)
     
-    print("\nTesting Naive Drift...")
-    nd = NaiveDrift()
-    nd.fit(y_train)
-    pred = nd.predict(horizon=5)
-    print(f"Single prediction: {pred}")
+    pred = forecaster.forecast(steps=24)
+    print(f"\n24-step forecast: {pred[:5]}...")
     
-    print("\nBaseline models ready!")
+    fitted = forecaster.get_fitted_values()
+    print(f"Fitted values: {len(fitted)} points")
