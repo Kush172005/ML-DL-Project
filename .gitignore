@@ -1,12 +1,9 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
-venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -22,33 +19,64 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
+
+# Virtual environments (any common name)
+venv/
+.venv/
+env/
+ENV/
+.virtualenv/
+
+# Test / coverage / typecheck caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
 
 # Jupyter
-.ipynb_checkpoints
+.ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# IDEs
+# --- Secrets & local env ---
+.env
+.env.*
+!.env.example
+
+# --- IDE / OS ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
+
+# --- Logs & temp ---
+*.log
+tmp/
+temp/
+.cache/
+
+# --- Project data / outputs ---
+# Keep figures/ in git (plots, CSV summaries for the report). Do not ignore
+# figures/*.png or figures/*.csv here.
+# Uncomment only if raw data should stay local:
+# data/raw/*.csv
+
+# --- Markdown: ignore by default (notes, scratch); allow repo docs ---
+*.md
+!README.md
+!PHASE2_CHANGES.md
+!EVALUATION_STUDY_GUIDE.md
 
 # Model checkpoints
 *.pth
 *.pt
 checkpoints/
 
-# Data (optional - we'll commit the CSV for reproducibility)
-# data/raw/*.csv
-
 # Matplotlib cache (local)
 .matplotlib/
-
-# Plots: keep tracked so evaluators see outputs without re-running (optional; delete if repo size matters)
-# figures/*.png
-# figures/*.pdf

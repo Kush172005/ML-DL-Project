@@ -86,6 +86,22 @@ def plot_target_and_splits(df, train_idx, val_idx, test_idx, target_col='OT', sa
     
     return fig
 
+def add_time_features(df):
+    """
+    Append sine/cosine encodings of hour-of-day and day-of-week to df.
+
+    These are always known (calendar), so they introduce no leakage.
+    Cyclical encoding preserves the circular nature of time: hour 23 is
+    adjacent to hour 0, which a plain integer would not capture.
+    """
+    df = df.copy()
+    df['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
+    df['dow_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+    df['dow_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+    return df
+
+
 if __name__ == '__main__':
     df = load_etth1()
     print(f"\nLoaded {len(df)} hourly observations")

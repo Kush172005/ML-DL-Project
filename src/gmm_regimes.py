@@ -28,13 +28,13 @@ def create_gmm_features(residuals, window=24):
     
     df = pd.DataFrame()
     
-    # Lag-1 residual
+    # 1. THE PAST ERROR: What was the exact error 1 hour ago? (Shift prevents looking into the future)
     df['resid_lag1'] = residuals.shift(1)
     
-    # Rolling volatility of residuals (causal: shift then roll)
+    # 2. THE CHAOS METER: How volatile/unstable were the errors over the last 24 hours? 
     df['resid_vol'] = residuals.shift(1).rolling(window).std()
     
-    # Rolling mean of absolute residuals
+    # 3. THE ERROR SIZE: How "big" were the errors on average over the last 24 hours?
     df['resid_abs_mean'] = residuals.abs().shift(1).rolling(window).mean()
     
     # Drop NaN from rolling windows
