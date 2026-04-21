@@ -17,7 +17,15 @@ def load_etth1(data_dir='data/raw'):
     Covariates: HUFL, HULL, MUFL, MULL (High/Medium/Low Usage/Load)
     """
     data_path = Path(data_dir)
-    df = pd.read_csv(data_path / 'ETTh1.csv')
+    file_path = data_path / 'ETTh1.csv'
+    
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"Data file not found at {file_path}. "
+            "Please run 'python scripts/download_data.py' first to fetch the dataset."
+        )
+    
+    df = pd.read_csv(file_path)
     
     # Parse date and set as index
     df['date'] = pd.to_datetime(df['date'])

@@ -56,6 +56,17 @@ def main():
     figures_dir = Path(__file__).parent.parent / 'figures'
     figures_dir.mkdir(exist_ok=True, parents=True)
 
+    # Device detection
+    device = torch.device('cuda' if torch.cuda.is_available() else 
+                          'mps' if torch.backends.mps.is_available() else 'cpu')
+    print(f"RUNNING ON: {device.type.upper()}")
+    print("-" * 40)
+    print(f"Hyperparameters:")
+    print(f"  Horizon: {HORIZON}")
+    print(f"  Encoder Length: {ENCODER_LENGTH}")
+    print(f"  Random Seed: {RANDOM_SEED}")
+    print("-" * 40)
+
     # -------------------------------------------------------------------------
     # 1. DATA PREPARATION
     # -------------------------------------------------------------------------
