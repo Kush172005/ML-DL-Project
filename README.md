@@ -274,3 +274,9 @@ Educational project for Phase 1 evaluation. ETTh1 data is publicly available via
 python scripts/run_all.py
 
 # Expected runtime: 3-5 minutes on CPU
+
+-------------------------------------------------------------------------
+
+**Final Project Note**: This repository represents the complete implementation for the ML/DL final evaluation. All results, figures, and models are fully reproducible using the provided scripts. 
+
+**Maintained by**: [Himanshu Rawat](https://github.com/HimanshuRawat77) & [Kush](https://github.com/Kush172005)
