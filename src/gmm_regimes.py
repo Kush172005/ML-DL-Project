@@ -9,26 +9,20 @@ from sklearn.mixture import GaussianMixture
 
 def create_gmm_features(residuals, window=24):
     """
-    Create causal features for GMM from residuals.
+    Creates 'clues' for the model to understand if the errors are currently 
+    stable or chaotic.
     
-    Features:
-    - Lagged residual (t-1)
-    - Rolling std of residuals (volatility proxy, past-only window)
-    - Rolling mean of absolute residuals
-    
-    Args:
-        residuals: Array or Series of residuals from linear model
-        window: Window size for rolling statistics
-    
-    Returns:
-        DataFrame with GMM features (NaN rows dropped)
+    We look at:
+    1. The last error made (Where did we miss?)
+    2. The 'Chaos Meter' (How much did the errors bounce around in the last 24h?)
+    3. The 'Error Size' (How big were the misses on average?)
     """
     if isinstance(residuals, np.ndarray):
         residuals = pd.Series(residuals)
     
     df = pd.DataFrame()
     
-    # 1. THE PAST ERROR: What was the exact error 1 hour ago? (Shift prevents looking into the future)
+    # 1. THE PAST ERROR: What was the exact error 1 hour ago? 
     df['resid_lag1'] = residuals.shift(1)
     
     # 2. THE CHAOS METER: How volatile/unstable were the errors over the last 24 hours? 
@@ -37,23 +31,19 @@ def create_gmm_features(residuals, window=24):
     # 3. THE ERROR SIZE: How "big" were the errors on average over the last 24 hours?
     df['resid_abs_mean'] = residuals.abs().shift(1).rolling(window).mean()
     
-    # Drop NaN from rolling windows
+    # Clean up the data
     df = df.dropna()
     
     return df
 
 class GMMRegimeDetector:
     """
-    Gaussian Mixture Model for regime detection.
-    Fits on training features only, then predicts regime probabilities.
+    A 'Situation Detector' that sorts the day's behavior into categories 
+    (like 'High Volatility' or 'Low Volatility'). 
+    It tells the AI model exactly what kind of situation it's dealing with.
     """
     
     def __init__(self, n_components=2, random_state=42):
-        """
-        Args:
-            n_components: Number of regimes (2 = high/low volatility)
-            random_state: For reproducibility
-        """
         self.n_components = n_components
         self.gmm = GaussianMixture(
             n_components=n_components,
@@ -64,52 +54,25 @@ class GMMRegimeDetector:
         self.feature_names = None
     
     def fit(self, X_train):
-        """
-        Fit GMM on training features.
-        
-        Args:
-            X_train: Training feature matrix (n_samples, n_features)
-        """
-        print(f"Fitting GMM with {self.n_components} components...")
-        print(f"  Training samples: {X_train.shape[0]}")
-        print(f"  Features: {X_train.shape[1]}")
-        
+        """Trains the detector to recognize different types of days."""
+        print(f"Setting up the Situation Detector ({self.n_components} categories)...")
         self.gmm.fit(X_train)
-        
-        print(f"  Converged: {self.gmm.converged_}")
-        print(f"  BIC: {self.gmm.bic(X_train):.2f}")
-        
         return self
     
     def predict_proba(self, X):
-        """
-        Predict regime probabilities for each time point.
-        
-        Args:
-            X: Feature matrix (n_samples, n_features)
-        
-        Returns:
-            Probabilities (n_samples, n_components)
-        """
+        """Predicts the probability of being in each situation."""
         if self.gmm is None:
-            raise ValueError("GMM must be fitted first")
-        
+            raise ValueError("Detector must be set up first")
         return self.gmm.predict_proba(X)
     
     def predict(self, X):
-        """Predict hard regime labels."""
+        """Gives a definitive label for the current situation."""
         return self.gmm.predict(X)
 
 def compute_residuals(y_true, y_fitted):
     """
-    Compute residuals from fitted model.
-    
-    Args:
-        y_true: Actual values
-        y_fitted: Fitted values from statistical model
-    
-    Returns:
-        Residuals (y_true - y_fitted)
+    Calculates the 'miss' (error) between the actual temperature and 
+    what our base model thought it would be.
     """
     if isinstance(y_true, pd.Series) and isinstance(y_fitted, pd.Series):
         # Align indices

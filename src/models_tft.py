@@ -18,12 +18,10 @@ from torch.optim.lr_scheduler import LambdaLR
 
 class TFTDataset(Dataset):
     """
-    Sliding-window dataset for the hybrid residual model.
-
-    Each sample contains:
-      encoder — past [residual | regime_probs | covariates] window
-      decoder — future [regime_probs | covariates] window (known at forecast time)
-      target  — future residual values to predict
+    A tool to organize the data into 'look-back' and 'look-forward' windows.
+    Think of it as preparing flashcards for the AI to study:
+    Front: Past results and current info.
+    Back: The future result we want it to guess.
     """
 
     def __init__(self, residuals, regime_probs, covariates, encoder_length=48, horizon=24):
@@ -41,15 +39,18 @@ class TFTDataset(Dataset):
     def __getitem__(self, idx):
         i = self.indices[idx]
 
+        # Get the past 48 hours of data
         enc_resid = self.residuals[i - self.encoder_length:i].reshape(-1, 1)
         enc_regime = self.regime_probs[i - self.encoder_length:i]
         enc_cov = self.covariates[i - self.encoder_length:i]
         encoder_input = np.concatenate([enc_resid, enc_regime, enc_cov], axis=1)
 
+        # Get the future info we already know (like time of day)
         dec_regime = self.regime_probs[i:i + self.horizon]
         dec_cov = self.covariates[i:i + self.horizon]
         decoder_input = np.concatenate([dec_regime, dec_cov], axis=1)
 
+        # The actual future result the model should aim to predict
         target = self.residuals[i:i + self.horizon]
 
         return (
@@ -61,12 +62,9 @@ class TFTDataset(Dataset):
 
 class GatedResidualBlock(nn.Module):
     """
-    Gated residual connection: output = LayerNorm(x + gate * transformed_x).
-
-    The gate is a learned sigmoid scalar per feature, giving the network
-    explicit control over how much of the transformed signal to add back.
-    This prevents gradient degradation and lets lower layers remain stable
-    even as the attention block is trained.
+    A smart 'gate' that lets the model decide how much new info to learn 
+    versus how much old info to keep. This prevents the model from forgetting 
+    basic patterns while trying to learn complex ones.
     """
 
     def __init__(self, d_model, dropout=0.1):
@@ -84,29 +82,10 @@ class GatedResidualBlock(nn.Module):
 
 class TemporalHybridNet(nn.Module):
     """
-    Phase 2 architecture for residual forecasting.
-
-    Encoder path:
-      1. BiLSTM (2 layers, hidden=64) — processes past context bidirectionally.
-         Bidirectional is valid here because at inference time the full encoder
-         window is already observed; we are not doing online step-ahead prediction.
-      2. Multi-Head Self-Attention (2 heads) over BiLSTM output sequence —
-         captures non-local temporal dependencies the recurrence cannot model
-         efficiently (e.g., same-hour-of-day patterns 24 steps apart).
-      3. Gated Residual connection around attention — stabilises gradients and
-         lets the LSTM output pass through unchanged when attention adds noise.
-
-    Decoder path:
-      Linear projection over the decoder sequence, then mean-pool to a single
-      context vector. More principled than Phase 1's plain mean-pool because
-      the projection learns which decoder features matter before pooling.
-
-    Fusion:
-      Concat encoder context + decoder context → MLP → linear to horizon outputs.
-
-    Weight initialisation:
-      FC layers: Xavier uniform. LSTM forget-gate bias set to 1 to discourage
-      early forgetting of long-range context.
+    The main AI model. It works in three main steps:
+    1. Memory: It reads the past data using a 'BiLSTM' (reading forward and backward).
+    2. Focus: It uses 'Attention' to focus on specific past moments that matter most.
+    3. Decision: It combines past memory with future known facts to make a prediction.
     """
 
     def __init__(self, encoder_input_size, decoder_input_size,

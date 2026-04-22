@@ -9,21 +9,21 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def mae(y_true, y_pred):
-    """Mean Absolute Error."""
+    """How much the model was off by, on average (in original units)."""
     return np.mean(np.abs(y_true - y_pred))
 
 def rmse(y_true, y_pred):
-    """Root Mean Squared Error."""
+    """Similar to MAE, but penalizes large mistakes more heavily."""
     return np.sqrt(np.mean((y_true - y_pred) ** 2))
 
 def mape(y_true, y_pred, epsilon=1e-10):
-    """Mean Absolute Percentage Error."""
+    """The average percentage the model was off by."""
     return np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + epsilon))) * 100
 
 def smape(y_true, y_pred):
     """
-    Symmetric Mean Absolute Percentage Error (sMAPE).
-    Primary metric per teacher's specification.
+    A fair version of the percentage error that treats over-predictions 
+    and under-predictions equally. This is our main 'grade' metric.
     """
     numerator = np.abs(y_pred - y_true)
     denominator = (np.abs(y_true) + np.abs(y_pred)) / 2
@@ -31,11 +31,8 @@ def smape(y_true, y_pred):
 
 def mase(y_true, y_pred, y_train, seasonal_period=24):
     """
-    Mean Absolute Scaled Error.
-
-    Scales MAE by the in-sample seasonal naive MAE (lag-seasonal_period), so
-    a MASE < 1 means the model beats the naive seasonal baseline. This answers
-    the rubric question "prove model value vs trivial baseline" in absolute terms.
+    This shows if our model is smarter than a 'lazy' guess (guessing 
+    tomorrow will be like yesterday). If this is less than 1, we win.
     """
     y_train = np.array(y_train).ravel()
     naive_errors = np.abs(y_train[seasonal_period:] - y_train[:-seasonal_period])
@@ -45,12 +42,8 @@ def mase(y_true, y_pred, y_train, seasonal_period=24):
 
 def seasonal_naive_forecast_windows(y_series, test_start_pos, n_windows, horizon, seasonal_period=24):
     """
-    Trivial baseline for rubric Technical Validation (vs naive forecast).
-
-    For each test sliding window i and step h, prediction = OT at the same
-    hour on the previous day: y[t+h-24] where t is the window origin in the
-    full series. y_series must be the full OT array in time order; test_start_pos
-    is the integer position of the first test row (no leakage: only past values).
+    The 'lazy' prediction: just guess that the temperature today will be the 
+    same as it was at the same time yesterday.
     """
     y = np.asarray(y_series).ravel()
     out = np.empty((n_windows, horizon))
@@ -62,41 +55,30 @@ def seasonal_naive_forecast_windows(y_series, test_start_pos, n_windows, horizon
 
 
 def print_training_interpretation(train_losses, val_losses):
-    """Short rubric-friendly note: interpret learning curves, not only plot them."""
+    """Translates the training math into a simple explanation of the model's progress."""
     if not train_losses or not val_losses:
         return
     last_t, last_v = train_losses[-1], val_losses[-1]
     ratio = last_v / (last_t + 1e-12)
-    print("\n--- Training curve interpretation ---")
-    print(f"  Last epoch: train MSE = {last_t:.4f}, val MSE = {last_v:.4f} (val/train ≈ {ratio:.1f}×).")
-    print("  MSE is on residual targets (small scale); val ≫ train often reflects")
-    print("  residual distribution shift across splits, not necessarily broken training.")
-    print("  Early stopping restores the best val checkpoint.")
+    print("\n--- How the model learned ---")
+    print(f"  Final scores: Training error = {last_t:.4f}, Validation error = {last_v:.4f}.")
+    print("  Note: If validation error is much higher than training, it means")
+    print("  the test year was harder to predict than the training years.")
 
 
 def print_per_horizon_diagnosis(per_horizon_df, metric='sMAPE'):
-    """Regression diagnostic: which forecast step is easiest / hardest."""
+    """Tells us which future hour was the easiest or hardest to predict."""
     if per_horizon_df is None or per_horizon_df.empty or metric not in per_horizon_df.columns:
         return
     best = per_horizon_df.loc[per_horizon_df[metric].idxmin()]
     worst = per_horizon_df.loc[per_horizon_df[metric].idxmax()]
-    print("\n--- Per-horizon diagnostic (where error peaks) ---")
-    print(f"  Lowest {metric}: {best['Horizon']} ({best[metric]:.4f})")
-    print(f"  Highest {metric}: {worst['Horizon']} ({worst[metric]:.4f})")
+    print("\n--- Which hour to focus on ---")
+    print(f"  Easiest hour: {best['Horizon']} (error only {best[metric]:.4f})")
+    print(f"  Hardest hour: {worst['Horizon']} (error reached {worst[metric]:.4f})")
 
 
 def evaluate_forecast(y_true, y_pred, metric_names=['sMAPE', 'MAE', 'RMSE']):
-    """
-    Evaluate forecast with multiple metrics.
-    
-    Args:
-        y_true: True values (n_samples, horizon) or (n_samples,)
-        y_pred: Predicted values (n_samples, horizon) or (n_samples,)
-        metric_names: List of metrics to compute
-    
-    Returns:
-        Dictionary of metric values
-    """
+    """Calculates all the different ways we measure the model's accuracy."""
     results = {}
     
     if 'MAE' in metric_names:
@@ -111,17 +93,7 @@ def evaluate_forecast(y_true, y_pred, metric_names=['sMAPE', 'MAE', 'RMSE']):
     return results
 
 def evaluate_per_horizon(y_true, y_pred, horizon_names=None):
-    """
-    Evaluate metrics for each forecast horizon separately.
-    
-    Args:
-        y_true: True values (n_samples, horizon)
-        y_pred: Predicted values (n_samples, horizon)
-        horizon_names: Optional list of horizon labels
-    
-    Returns:
-        DataFrame with metrics per horizon
-    """
+    """Breaks down the accuracy for each hour into the future (Hour +1, +2, etc.)."""
     if y_true.ndim == 1:
         y_true = y_true.reshape(-1, 1)
         y_pred = y_pred.reshape(-1, 1)
@@ -140,18 +112,7 @@ def evaluate_per_horizon(y_true, y_pred, horizon_names=None):
     return pd.DataFrame(results)
 
 def evaluate_by_regime(y_true, y_pred, regime_labels, regime_col='regime'):
-    """
-    Evaluate metrics separately for different regimes (e.g., high/low volatility).
-    
-    Args:
-        y_true: True values (n_samples, horizon) or (n_samples,)
-        y_pred: Predicted values (n_samples, horizon) or (n_samples,)
-        regime_labels: Array or Series of regime labels aligned with y_true
-        regime_col: Name for regime column in output
-    
-    Returns:
-        DataFrame with metrics per regime
-    """
+    """Checks if the model works better in some situations (like stable days) over others."""
     if isinstance(regime_labels, pd.Series):
         regime_labels = regime_labels.values
     
@@ -169,67 +130,59 @@ def evaluate_by_regime(y_true, y_pred, regime_labels, regime_col='regime'):
     return pd.DataFrame(results)
 
 def print_evaluation_summary(y_true, y_pred, regime_labels=None, model_name='Model'):
-    """Print comprehensive evaluation summary."""
+    """Prints out a clear summary of how the model did overall."""
     print(f"\n{'='*60}")
-    print(f"{model_name} Evaluation Summary")
+    print(f"{model_name} Report Card")
     print(f"{'='*60}")
     
-    # Overall metrics
     overall = evaluate_forecast(y_true, y_pred)
     print(f"\nOverall Performance:")
     for metric, value in overall.items():
         print(f"  {metric}: {value:.6f}")
     
-    # Per-horizon metrics (if multi-step)
     if y_true.ndim > 1 and y_true.shape[1] > 1:
-        print(f"\nPer-Horizon Performance:")
+        print(f"\nPerformance for each future hour:")
         per_horizon = evaluate_per_horizon(y_true, y_pred)
         print(per_horizon.to_string(index=False))
     
-    # Regime-specific metrics
     if regime_labels is not None:
-        print(f"\nRegime-Specific Performance:")
+        print(f"\nPerformance in different situations:")
         by_regime = evaluate_by_regime(y_true, y_pred, regime_labels)
         print(by_regime.to_string(index=False))
     
     print(f"{'='*60}\n")
 
 def plot_training_curves(train_losses, val_losses, save_path=None):
-    """
-    Plot train vs validation MSE loss per epoch.
-
-    The gap between curves reveals overfitting; convergence speed shows
-    whether the LR schedule is appropriate.
-    """
+    """Creates a chart showing how the model's errors went down as it practiced."""
     fig, ax = plt.subplots(figsize=(8, 4))
     epochs = range(1, len(train_losses) + 1)
-    ax.plot(epochs, train_losses, label='Train MSE', linewidth=1.5)
-    ax.plot(epochs, val_losses, label='Val MSE', linewidth=1.5, linestyle='--')
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('MSE Loss')
-    ax.set_title('Training Curves — TemporalHybridNet')
+    ax.plot(epochs, train_losses, label='Practice Error', linewidth=1.5)
+    ax.plot(epochs, val_losses, label='Test Error', linewidth=1.5, linestyle='--')
+    ax.set_xlabel('Study Rounds')
+    ax.set_ylabel('Error Size')
+    ax.set_title('Learning Progress')
     ax.legend()
     ax.grid(alpha=0.3)
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved training curves to {save_path}")
+        print(f"Saved learning chart to {save_path}")
     return fig
 
 
 def plot_per_horizon(per_horizon_df, metric='sMAPE', save_path=None):
-    """Bar chart of a chosen metric across forecast horizons H+1 … H+24."""
+    """Creates a bar chart showing which future hour was hardest to guess."""
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.bar(per_horizon_df['Horizon'], per_horizon_df[metric], alpha=0.8)
-    ax.set_xlabel('Forecast Horizon')
-    ax.set_ylabel(metric)
-    ax.set_title(f'Per-Horizon {metric} — Hybrid Forecast')
+    ax.set_xlabel('Future Hour')
+    ax.set_ylabel('Error Score')
+    ax.set_title('Errors per Forecast Hour')
     ax.tick_params(axis='x', rotation=45)
     ax.grid(alpha=0.3, axis='y')
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved per-horizon plot to {save_path}")
+        print(f"Saved bar chart to {save_path}")
     return fig
 
 

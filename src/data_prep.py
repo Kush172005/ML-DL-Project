@@ -10,11 +10,7 @@ from pathlib import Path
 
 def load_etth1(data_dir='data/raw'):
     """
-    Load ETTh1 dataset.
-    
-    Columns: date, HUFL, HULL, MUFL, MULL, LUFL, LULL, OT
-    Target: OT (Oil Temperature)
-    Covariates: HUFL, HULL, MUFL, MULL (High/Medium/Low Usage/Load)
+    Loads the electricity transformer temperature (ETTh1) data from a CSV file.
     """
     data_path = Path(data_dir)
     file_path = data_path / 'ETTh1.csv'
@@ -22,12 +18,12 @@ def load_etth1(data_dir='data/raw'):
     if not file_path.exists():
         raise FileNotFoundError(
             f"Data file not found at {file_path}. "
-            "Please run 'python scripts/download_data.py' first to fetch the dataset."
+            "Please run 'python scripts/download_data.py' first to fetch the data."
         )
     
     df = pd.read_csv(file_path)
     
-    # Parse date and set as index
+    # Organize data by date so it's in order
     df['date'] = pd.to_datetime(df['date'])
     df = df.set_index('date')
     df = df.sort_index()
@@ -35,25 +31,24 @@ def load_etth1(data_dir='data/raw'):
     return df
 
 def clean_data(df):
-    """Handle missing values and check for issues."""
-    # Check for duplicates
+    """
+    Cleans the data by removing duplicates and filling in any missing spots.
+    """
     if df.index.duplicated().any():
-        print(f"Warning: {df.index.duplicated().sum()} duplicate timestamps, keeping first")
+        print(f"Warning: Found some repeated time stamps, keeping only the first one.")
         df = df[~df.index.duplicated(keep='first')]
     
-    # Check missing values
     missing = df.isnull().sum()
     if missing.sum() > 0:
-        print(f"Missing values found:\n{missing[missing > 0]}")
-        print("Forward-filling missing values...")
+        print(f"Notice: Some data points were missing. Filling them in with the last known values.")
         df = df.ffill().bfill()
     
     return df
 
 def chronological_split(df, train_frac=0.6, val_frac=0.2):
     """
-    Split data chronologically for time series: train / validation / test.
-    No shuffling to prevent temporal leakage.
+    Splits the data into training, validation, and test sets in order.
+    We don't shuffle because timing matters in this data.
     """
     n = len(df)
     train_end = int(n * train_frac)
@@ -63,44 +58,43 @@ def chronological_split(df, train_frac=0.6, val_frac=0.2):
     val_idx = df.index[train_end:val_end]
     test_idx = df.index[val_end:]
     
-    print(f"Chronological splits:")
-    print(f"  Train: {train_idx[0]} to {train_idx[-1]} ({len(train_idx)} hours)")
-    print(f"  Val:   {val_idx[0]} to {val_idx[-1]} ({len(val_idx)} hours)")
-    print(f"  Test:  {test_idx[0]} to {test_idx[-1]} ({len(test_idx)} hours)")
+    print(f"Dividing data into three parts:")
+    print(f"  Training: {train_idx[0]} to {train_idx[-1]}")
+    print(f"  Check (Val): {val_idx[0]} to {val_idx[-1]}")
+    print(f"  TFinal test: {test_idx[0]} to {test_idx[-1]}")
     
     return train_idx, val_idx, test_idx
 
 def plot_target_and_splits(df, train_idx, val_idx, test_idx, target_col='OT', save_path=None):
-    """Visualize target variable with train/val/test regions."""
+    """
+    Creates a graph showing how the oil temperature is divided into training and testing sections.
+    """
     fig, ax = plt.subplots(figsize=(14, 5))
     
     ax.plot(df.loc[train_idx].index, df.loc[train_idx, target_col], 
-            label='Train', alpha=0.7, linewidth=0.8)
+            label='Training Data', alpha=0.7, linewidth=0.8)
     ax.plot(df.loc[val_idx].index, df.loc[val_idx, target_col], 
-            label='Validation', alpha=0.7, linewidth=0.8)
+            label='Check (Val) Data', alpha=0.7, linewidth=0.8)
     ax.plot(df.loc[test_idx].index, df.loc[test_idx, target_col], 
-            label='Test', alpha=0.7, linewidth=0.8)
+            label='Final Test Data', alpha=0.7, linewidth=0.8)
     
     ax.set_xlabel('Date')
-    ax.set_ylabel(f'{target_col} (Oil Temperature)')
-    ax.set_title('ETTh1: Chronological Train/Val/Test Split')
+    ax.set_ylabel('Oil Temperature')
+    ax.set_title('Visualizing how we split the data')
     ax.legend()
     ax.grid(alpha=0.3)
     
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved split visualization to {save_path}")
+        print(f"Saved graph to {save_path}")
     
     return fig
 
 def add_time_features(df):
     """
-    Append sine/cosine encodings of hour-of-day and day-of-week to df.
-
-    These are always known (calendar), so they introduce no leakage.
-    Cyclical encoding preserves the circular nature of time: hour 23 is
-    adjacent to hour 0, which a plain integer would not capture.
+    Adds time information like the hour and day of the week to help the model 
+    understand daily and weekly cycles.
     """
     df = df.copy()
     df['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
