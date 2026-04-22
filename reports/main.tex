@@ -143,25 +143,22 @@ Chronological splits (60\,/\,20\,/\,20) ensure no temporal leakage.
 
 \textbf{Classical baselines.}
 ARIMA, SARIMAX, and exponential smoothing (ETS) provide strong, interpretable
-baselines for seasonal series~\citep{hyndman2021forecasting}.
+baselines for seasonal series.
 They are linear, however, and cannot adapt to residual structure.
 
 \textbf{Deep sequence models.}
-LSTMs~\citep{hochreiter1997lstm} overcome vanishing gradients via gating but
-process sequences unidirectionally.
-Bidirectional variants and attention
-mechanisms~\citep{vaswani2017attention} improve representation quality by
-allowing direct connections between arbitrary positions.
-The Temporal Fusion Transformer~\citep{lim2021temporal} combines variable
-selection, recurrent encoding, and interpretable attention for multi-horizon
-forecasting.
+LSTMs~\citep{hochreiter1997lstm} overcome vanishing gradients via gating;
+bidirectional variants and attention improve representations by allowing direct
+connections between distant time steps.
+On compact hourly benchmarks such as ETTh1, very large attention-only
+architectures do not always outperform simpler recurrent or linear
+models~\citep{zeng2023ltsproblem}.
 
-\textbf{Gap.}
-Large Transformer architectures do not consistently outperform simpler baselines
-on small benchmarks such as ETTh1~\citep{zeng2023ltsproblem}.
-Hybrid residual decomposition~\citep{smyl2020hybrid} provides a middle ground:
-statistical interpretation for the dominant component plus targeted deep
-learning for residuals.
+\textbf{Hybrid forecasting.}
+Hybrid residual decomposition---classical structure for the dominant signal plus
+a recurrent model for the remainder~\citep{smyl2020hybrid}---matches our setting:
+interpretable seasonality from SARIMAX and nonlinear residuals learned by a
+compact deep module.
 
 % ===========================================================
 \section{Data and Preprocessing}
@@ -183,7 +180,8 @@ learning for residuals.
   \end{tabular}
 \end{table}
 
-\textbf{ETTh1} is a public hourly benchmark~\citep{lim2021temporal}.
+\textbf{ETTh1} is a public hourly benchmark used in long-term forecasting
+studies~\citep{zeng2023ltsproblem}.
 Target \texttt{OT} (oil temperature) is a proxy for transformer load.
 Covariates are four high-/medium-load usage channels (HUFL, HULL, MUFL, MULL).
 
@@ -305,8 +303,8 @@ $\hat{r}_{t+1:t+H}=W_2\,\mathrm{ReLU}(W_1[\mathbf{z};\mathbf{c}])$.
 \subsection{Training and Regularisation}
 
 \textbf{Optimiser.}
-AdamW~\citep{loshchilov2019adamw} decouples weight decay from adaptive scaling,
-restoring effective $\ell_2$ regularisation.
+AdamW decouples weight decay from adaptive scaling, restoring effective
+$\ell_2$ regularisation.
 
 \textbf{Schedule.}
 Linear warm-up over the first 10\,\% of steps, then cosine decay to zero:
@@ -472,7 +470,7 @@ preventing gradient destabilisation while maintaining a direct gradient path.
 Adam's adaptive scaling distorts $\ell_2$ decay: features with large
 gradients receive proportionally less regularisation.
 AdamW applies weight decay independently of the gradient, restoring
-well-calibrated regularisation~\citep{loshchilov2019adamw}.
+well-calibrated regularisation.
 
 \textbf{Limitations.}
 SARIMAX orders are fixed (no automatic selection); decoder uses benchmark
@@ -500,44 +498,23 @@ all figures and result CSVs are saved to \texttt{figures/}.
 %  References
 % ===========================================================
 \bibliographystyle{abbrvnat}
-\begin{thebibliography}{9}
-
-\bibitem{hyndman2021forecasting}
-R.~J. Hyndman and G.~Athanasopoulos,
-\textit{Forecasting: Principles and Practice}, 3rd~ed.
-OTexts, 2021.
+\begin{thebibliography}{3}
 
 \bibitem{hochreiter1997lstm}
 S.~Hochreiter and J.~Schmidhuber,
 ``Long short-term memory,''
 \textit{Neural Computation}, vol.~9, no.~8, pp.~1735--1780, 1997.
 
-\bibitem{vaswani2017attention}
-A.~Vaswani \textit{et al.},
-``Attention is all you need,''
-in \textit{Proc.\ NeurIPS}, 2017.
-
-\bibitem{lim2021temporal}
-B.~Lim \textit{et al.},
-``Temporal Fusion Transformers for interpretable multi-horizon time series
-forecasting,''
-\textit{Int.\ J.\ Forecasting}, vol.~37, no.~4, pp.~1748--1764, 2021.
+\bibitem{zeng2023ltsproblem}
+A.~Zeng \textit{et al.},
+``Are transformers effective for time series forecasting?''
+in \textit{Proc.\ AAAI}, 2023.
 
 \bibitem{smyl2020hybrid}
 S.~Smyl,
 ``A hybrid method of exponential smoothing and recurrent neural networks
 for time series forecasting,''
 \textit{Int.\ J.\ Forecasting}, vol.~36, no.~1, pp.~75--85, 2020.
-
-\bibitem{zeng2023ltsproblem}
-A.~Zeng \textit{et al.},
-``Are transformers effective for time series forecasting?''
-in \textit{Proc.\ AAAI}, 2023.
-
-\bibitem{loshchilov2019adamw}
-I.~Loshchilov and F.~Hutter,
-``Decoupled weight decay regularization,''
-in \textit{Proc.\ ICLR}, 2019.
 
 \end{thebibliography}
 
