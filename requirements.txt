@@ -1,11 +1,18 @@
+# --- Core Data Science ---
 numpy>=1.24.0
 pandas>=2.0.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
 scikit-learn>=1.3.0
 statsmodels>=0.14.0
+
+# --- Deep Learning ---
 torch>=2.0.0
 pytorch-lightning>=2.0.0
 pytorch-forecasting>=1.0.0
+
+# --- Visualization & UI ---
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# --- Development ---
 jupyter>=1.0.0
 notebook>=7.0.0
